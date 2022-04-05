@@ -6,6 +6,32 @@
 #include "datasets/log_STDBIN_V4.h"
 #include "datasets/log_STDBIN_V5.h"
 
+#include "feature_test/TestStdBinDecoderErrorRecovery.h"
+
+TEST_F(TestStdBinDecoderErrorRecovery, RecoveryFromBadCheckSum){
+    // add bad frame to buffer
+    this->addNewDataFrame(BAD_CHECK_SUM);
+    this->testIsErrorIsThrown();
+
+    this->testNavFrameErrorRecovery();
+}
+
+TEST_F(TestStdBinDecoderErrorRecovery, RecoveryFromBadNavProtocolVersion){
+    // add bad frame to buffer
+    this->addNewDataFrame(BAD_NAV_PROTOCOL_VERSION);
+    this->testIsErrorIsThrown();
+
+    this->testNavFrameErrorRecovery();
+}
+
+TEST_F(TestStdBinDecoderErrorRecovery, RecoveryFromBadAnswerProtocolVersion){
+    // add bad frame to buffer
+    this->addNewDataFrame(BAD_ANSWER_PROTOCOL_VERSION);
+    this->testIsErrorIsThrown();
+
+    this->testAnswerFrameErrorRecovery();
+}
+
 TEST(StdBinDecoder, WeCannotParseAFrameWithSomeMissingFields)
 {
     // Given a frame with only attitude :
