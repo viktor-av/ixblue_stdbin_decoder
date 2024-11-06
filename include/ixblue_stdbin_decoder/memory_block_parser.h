@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ixblue_stdbin_decoder/config.h"
 #include "ixblue_stdbin_decoder/data_models/stdbin.h"
 #include <bitset>
 #include <boost/asio/buffer.hpp>
