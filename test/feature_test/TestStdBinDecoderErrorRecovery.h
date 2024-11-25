@@ -17,35 +17,30 @@ class TestStdBinDecoderErrorRecovery : public ixblue_stdbin_decoder::StdBinDecod
      * @brief used to assert if error recovery was successfully applied
      */
     void testNavFrameErrorRecovery(){
-        this->addNewDataFrame(MINIMAL_V2_NAV_FRAME);
-        ASSERT_NO_THROW(parseNextFrame()) << "Error recovery don't work.";
-        ASSERT_EQ(this->internalBuffer.size(),0L);
+        std::size_t parsed = 0;
+        ASSERT_NO_THROW(parseNextFrame(MINIMAL_V2_NAV_FRAME.data(),MINIMAL_V2_NAV_FRAME.size(),
+        		parsed)) << "Error recovery don't work.";
+        ASSERT_EQ(parsed,MINIMAL_V2_NAV_FRAME.size());
     }
 
     /**
      * @brief used to assert if error recovery was successfully applied
      */
     void testAnswerFrameErrorRecovery(){
-        this->addNewDataFrame(MINIMAL_V3_ANS_FRAME);
-        ASSERT_NO_THROW(parseNextFrame()) << "Error recovery don't work.";
-        ASSERT_EQ(this->internalBuffer.size(),0L);
+        //this->addNewDataFrame(MINIMAL_V3_ANS_FRAME);
+        std::size_t parsed = 0;
+        ASSERT_NO_THROW(parseNextFrame(MINIMAL_V3_ANS_FRAME.data(),MINIMAL_V3_ANS_FRAME.size(),
+        		parsed)) << "Error recovery don't work.";
+        ASSERT_EQ(parsed,MINIMAL_V3_ANS_FRAME.size());
     }
 public:
     /**
-     * @brief Add data using dataset values
-     * @tparam T dataset inferred type
-     * @param frame passed to add new data function
-     */
-    template<typename T> void addNewDataFrame(const T & frame){
-        this->addNewData(frame.data(),frame.size());
-    }
-
-    /**
      * @brief used to assert if is error is thrown
      */
-    void testIsErrorIsThrown(ssize_t cleaned_buffer_size){
-        ASSERT_THROW(parseNextFrame(),std::runtime_error) << "Exception must be thrown in miss formatted data frame.";
-        EXPECT_EQ(this->internalBuffer.size(),cleaned_buffer_size) << "Buffer must be cleaned.";
+    void testIsErrorIsThrown(const uint8_t* data, const std::size_t length,
+    		std::size_t& parsed, ssize_t cleaned_buffer_size){
+        ASSERT_THROW(parseNextFrame(data,length,parsed),std::runtime_error) << "Exception must be thrown in miss formatted data frame.";
+        EXPECT_EQ(length-parsed,cleaned_buffer_size) << "Buffer must be cleaned.";
     }
 
     /**

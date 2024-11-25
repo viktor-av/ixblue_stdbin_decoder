@@ -39,6 +39,8 @@ class StdBinDecoder : private boost::noncopyable
         std::function<bool(const MemoryBlockParserPtr&, const MemoryBlockParserPtr&)>>
         tParsersSet;
 
+    static constexpr size_t HEADER_MINIMAL_SIZE = 3;
+
     static constexpr size_t HEADER_SIZE_V2 = 21;
     static constexpr size_t HEADER_SIZE_V3 = 25;
     static constexpr size_t HEADER_SIZE_V4 = 27;
@@ -50,41 +52,16 @@ public:
     StdBinDecoder();
 
     /*!
-     * \brief Add new binary data to the parser internal buffer
-     * The new data can only be a part of a frame, the parser will manage to assemble
-     * the several parts in order to decode it
-     * \param data a pointer to a contiguous memory buffer
-     * \param length the amount of bytes to read from the buffer
-     */
-    void addNewData(const uint8_t* data, std::size_t length);
-
-    /*!
-     * \brief Add new binary data to the parser internal buffer
-     * The new data can only be a part of a frame, the parser will manage to assemble
-     * the several parts in order to decode it
-     * \param data a std::vector containing data to copy into the internal buffer
-     * \warning The vector must be full of received bytes because it will be entirely
-     * copied to the internal buffer.
-     * If the vector is only partially filled, use the other oveload:
-     * \code{.cpp}
-     * std::vector<uint8_t> buf(2000);
-     * std::size_t byteRead = socket.read(buf);
-     * // here, the buf only contains byteRead valid bytes
-     * parser.addNewData(buf.data(), bytesRead);
-     * \endcode
-     */
-    void addNewData(const std::vector<uint8_t>& data);
-
-    /*!
-     * \brief Try to parse a frame from the parser internal buffer.
-     * Some binary data must have been added with the \c addNewData() method beforehand.
+     * \brief Try to parse a frame.
      * This method is able to handle buffer with header at the middle of the frame as
      * found on connection-less communication like serial port (RS-232).
-     * \return true if the frame has been completly parsed, false otherwise.
+     * \return true if the frame has been completely parsed, false otherwise.
      * If frame has been parsed, result is accessible via \c getLastNavData();
      * \exception runtime_error if a parse error occurs.
      */
-    bool parseNextFrame();
+    bool parseNextFrame(const uint8_t* data, const std::size_t length, std::size_t& consumed);
+
+    bool parseNextFrame(const std::vector<uint8_t>& data, std::size_t& consumed);
 
     Data::BinaryNav getLastNavData(void) const { return lastParsed; }
     Data::NavHeader getLastHeaderData(void) const { return lastHeader; }
@@ -94,15 +71,17 @@ protected:
     /*!
      * \exception runtime_error if a parse error occurs.
      */
-    Data::NavHeader parseHeader(boost::asio::const_buffer& buffer) const;
-    Data::NavHeader::MessageType getHeaderType(boost::asio::const_buffer& buffer) const;
-    bool haveEnoughBytesToParseHeader();
+    Data::NavHeader parseHeader(boost::asio::const_buffer& buffer,
+    		const Data::NavHeader::MessageType header_type, const uint8_t protocol_version) const;
+    Data::NavHeader::MessageType haveHeader(boost::asio::const_buffer buffer);
+    bool haveEnoughBytesToParseHeader(const std::size_t length,
+    		const Data::NavHeader::MessageType header_type, const uint8_t protocol_version);
     /*!
      * \brief Compute current frame checksum and compare with the frame checksum.
      * If mismatch, throw \c std::runtime_error exception.
      * \exception runtime_error if bad checksum
      */
-    void compareChecksum();
+    void compareChecksum(const uint8_t* data, std::size_t length);
     // We set the parsers set "constant" to be sure that the content of this set will be
     // the same during all the lifetime of this object. We can only add memory bloc parser
     // at construction.
@@ -114,8 +93,5 @@ protected:
     Data::NavHeader lastHeader;
     std::vector<uint8_t> lastAnswer;
 
-    // We store in this buffer the current frame's data. This memory chunk is managed by
-    // the parsing state machine. See function \c parse.
-    boost::circular_buffer<uint8_t> internalBuffer;
 };
 } // namespace ixblue_stdbin_decoder

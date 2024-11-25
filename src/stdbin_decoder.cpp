@@ -145,43 +145,75 @@ StdBinDecoder::StdBinDecoder()
            std::make_shared<Parser::LogBook>()},
           [](const MemoryBlockParserPtr& lhs, const MemoryBlockParserPtr& rhs) -> bool {
               return lhs->getOffsetInMask() < rhs->getOffsetInMask();
-          }),
-      internalBuffer{128000}
+          })
 
 {}
 
-void StdBinDecoder::addNewData(const std::vector<uint8_t>& data)
+
+bool StdBinDecoder::parseNextFrame(const std::vector<uint8_t>& data, std::size_t& consumed)
 {
-    addNewData(data.data(), data.size());
+	return parseNextFrame(data.data(), data.size(), consumed);
 }
 
-void StdBinDecoder::addNewData(const uint8_t* data, std::size_t length)
+bool StdBinDecoder::parseNextFrame(const uint8_t* data, const std::size_t length, std::size_t& consumed)
 {
-    internalBuffer.insert(internalBuffer.end(), data, data + length);
-}
+	consumed = 0;
+    boost::asio::const_buffer buffer(data, length);
+    Data::NavHeader::MessageType header_type = Data::NavHeader::MessageType::Unknown;
 
-bool StdBinDecoder::parseNextFrame()
-{
-    // Now, we will look for version of the received frame and wait to have receive enough
-    // data to parse full header.
-    if(!haveEnoughBytesToParseHeader())
+    // Skip some bytes if there is no header signature
+    while(buffer.size() > HEADER_MINIMAL_SIZE)
     {
-        return false;
+    	header_type = haveHeader(buffer);
+    	if(header_type == Data::NavHeader::MessageType::Unknown)
+    		buffer += 1;
+    	else
+    		break;
     }
 
-    // The call to linearize() can lead to a copy of the buffer content, but once in a
-    // because the buffer is quite large
-    boost::asio::const_buffer buffer(internalBuffer.linearize(), internalBuffer.size());
-    lastHeader = parseHeader(buffer);
-    // if we didn't receive the whole frame, we return false, and wait for the next
-    // memory chunck.
-    if(internalBuffer.size() < lastHeader.telegramSize)
+    // Indicate as consumed all bytes that have been skipped so far
+    consumed = length - buffer.size();
+
+    // Have not found a valid header signature, return
+    if(header_type == Data::NavHeader::MessageType::Unknown)
+        return false;
+
+    // Advance buffer by signature size
+    buffer += 2;
+    // Get protocol version
+    uint8_t protocol_version = 0;
+    buffer >> protocol_version;
+
+    try
+    {
+    	if (!haveEnoughBytesToParseHeader(buffer.size(), header_type, protocol_version))
+    		return false;
+    }
+    catch(...)
+    {
+    	// Rethrow, but tell to advance the buffer before
+    	consumed += 1;
+    	throw;
+    }
+
+    lastHeader = parseHeader(buffer, header_type, protocol_version);
+    // if we didn't receive the whole frame, we return false
+    if(length - consumed < lastHeader.telegramSize)
     {
         return false;
     }
 
     // Compare checksum before going further (will throw if bad)
-    compareChecksum();
+    try
+    {
+    	compareChecksum(data + consumed, length - consumed);
+    }
+    catch(...)
+    {
+        // Rethow, but tell to remove the parsed telegram from the buffer
+        consumed += lastHeader.telegramSize;
+        throw;
+    }
 
     if(lastHeader.messageType == Data::NavHeader::MessageType::NavData)
     {
@@ -215,70 +247,80 @@ bool StdBinDecoder::parseNextFrame()
     }
 
     // Remove the parsed telegram from the buffer
-    internalBuffer.erase_begin(lastHeader.telegramSize);
+    consumed += lastHeader.telegramSize;
     return true;
 }
 
-bool StdBinDecoder::haveEnoughBytesToParseHeader()
+Data::NavHeader::MessageType StdBinDecoder::haveHeader(const_buffer buffer)
 {
-    while(internalBuffer.size() > 3)
-    {
-        const uint8_t protocol_version = internalBuffer[2];
-        if(internalBuffer[0] == 'I' && internalBuffer[1] == 'X')
-        {
-            switch(protocol_version)
-            {
-            case 0x02: return internalBuffer.size() >= HEADER_SIZE_V2;
-            case 0x03: return internalBuffer.size() >= HEADER_SIZE_V3;
-            case 0x04: return internalBuffer.size() >= HEADER_SIZE_V4;
-            case 0x05: return internalBuffer.size() >= HEADER_SIZE_V5;
-            default:
-                // Errors need to clean header, pop one byte at front associated to internal buffer and thrown exception
-                internalBuffer.pop_front();
-                throw std::runtime_error("Unhandled protocol version");
-            }
-        }
-        else if(internalBuffer[0] == 'A' && internalBuffer[1] == 'N')
-        {
-            if(protocol_version >= 3 && protocol_version <= 5)
-            {
-                return internalBuffer.size() >= ANSWER_HEADER_SIZE;
-            }
-            else
-            {
-                // Errors need to clean header, pop one byte at front associated to internal buffer and thrown exception
-                internalBuffer.pop_front();
-                throw std::runtime_error("Unhandled protocol version for an answer");
-            }
-        }
-        else
-        {
-            // No valid header found, pop one byte at the front of the buffer and try
-            // again
-            internalBuffer.pop_front();
-        }
-    }
-    return false;
+	uint8_t h1, h2;
+
+	buffer >> h1;
+	if(h1 != 'I' && h1 != 'A')
+		return Data::NavHeader::MessageType::Unknown;
+
+	buffer >> h2;
+
+	if(h1 == 'I' && h2 == 'X')
+	{
+		return Data::NavHeader::MessageType::NavData;
+	}
+
+	if(h1 == 'A' && h2 == 'N')
+	{
+		return Data::NavHeader::MessageType::Answer;
+	}
+    return Data::NavHeader::MessageType::Unknown;
 }
 
-void StdBinDecoder::compareChecksum()
+bool StdBinDecoder::haveEnoughBytesToParseHeader(const std::size_t length,
+		const Data::NavHeader::MessageType header_type, const uint8_t protocol_version)
+{
+	if(header_type == Data::NavHeader::MessageType::NavData)
+	{
+		switch(protocol_version)
+		{
+		case 0x02: return length >= HEADER_SIZE_V2;
+		case 0x03: return length >= HEADER_SIZE_V3;
+		case 0x04: return length >= HEADER_SIZE_V4;
+		case 0x05: return length >= HEADER_SIZE_V5;
+		default:
+			throw std::runtime_error("Unhandled protocol version");
+		}
+	}
+	else if(header_type == Data::NavHeader::MessageType::Answer)
+	{
+		if(protocol_version >= 3 && protocol_version <= 5)
+		{
+			return length >= ANSWER_HEADER_SIZE;
+		}
+		else
+		{
+			throw std::runtime_error("Unhandled protocol version for an answer");
+		}
+	}
+	else
+	{
+		// Should have been checked before
+		throw std::runtime_error("No valid header found");
+	}
+	return false;
+}
+
+void StdBinDecoder::compareChecksum(const uint8_t* data, std::size_t length)
 {
     // Create a new buffer to start from start of frame
-    // This call to linearize() is free because the buffer as been linearized just before
-    boost::asio::const_buffer buffer(internalBuffer.linearize(), internalBuffer.size());
+    boost::asio::const_buffer buffer(data, length);
     const std::size_t checksumPositionInFrame = lastHeader.telegramSize - CHECKSUM_SIZE;
     buffer = buffer + checksumPositionInFrame;
     uint32_t receivedChecksum = 0;
     buffer >> receivedChecksum;
 
     const uint32_t computedChecksum = std::accumulate(
-        internalBuffer.begin(), internalBuffer.begin() + checksumPositionInFrame, 0);
+    		data, data + checksumPositionInFrame, 0);
 
     if(receivedChecksum != computedChecksum)
     {
-        // Remove the parsed telegram from the buffer
-        internalBuffer.erase_begin(lastHeader.telegramSize);
-
         std::ostringstream ss;
         ss << "Bad checksum. Received: 0x" << std::hex << receivedChecksum
            << ", computed: 0x" << computedChecksum;
@@ -286,25 +328,22 @@ void StdBinDecoder::compareChecksum()
     }
 }
 
-Data::NavHeader StdBinDecoder::parseHeader(const_buffer& buffer) const
+Data::NavHeader StdBinDecoder::parseHeader(const_buffer& buffer,
+		const Data::NavHeader::MessageType header_type, const uint8_t protocol_version) const
 {
-    // We know we have enough bytes to parse the whole header because it had been
-    // checked before.
-    static constexpr size_t HEADER_MINIMAL_SIZE = 3;
-
     Data::NavHeader res;
-    if(buffer_size(buffer) < HEADER_MINIMAL_SIZE)
+    if(buffer.size() < HEADER_MINIMAL_SIZE)
     {
         throw std::runtime_error("Not enough bytes in buffer to parse header");
     }
 
-    res.messageType = getHeaderType(buffer);
+    res.messageType = header_type;
     if(res.messageType == Data::NavHeader::MessageType::Unknown)
     {
         throw std::runtime_error("Incorrect frame header, expected 'I', 'X' or 'A', 'N'");
     }
 
-    buffer >> res.protocolVersion;
+    res.protocolVersion = protocol_version;
     if(res.protocolVersion < 2 || res.protocolVersion > 5)
     {
         throw std::runtime_error(
@@ -336,26 +375,6 @@ Data::NavHeader StdBinDecoder::parseHeader(const_buffer& buffer) const
         buffer >> res.telegramSize;
     }
     return res;
-}
-
-Data::NavHeader::MessageType StdBinDecoder::getHeaderType(const_buffer& buffer) const
-{
-    // We already checked the buffer size before calling this method.
-    uint8_t h1, h2;
-    buffer >> h1;
-    buffer >> h2;
-
-    if(h1 == 'I' && h2 == 'X')
-    {
-        return Data::NavHeader::MessageType::NavData;
-    }
-
-    if(h1 == 'A' && h2 == 'N')
-    {
-        return Data::NavHeader::MessageType::Answer;
-    }
-
-    return Data::NavHeader::MessageType::Unknown;
 }
 
 } // namespace ixblue_stdbin_decoder
